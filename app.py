@@ -1103,7 +1103,7 @@ with col_esq:
     st.dataframe(rec, use_container_width=True, hide_index=True)
 
 with col_dir:
- st.markdown('<div class="section">⚖️ Calibração por analista (% GG)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section">⚖️ Calibração por analista (% GG)</div>', unsafe_allow_html=True)
     if "ANALISTA" in viewQ.columns and "GRAVIDADE" in viewQ.columns:
         ana = (
             viewQ.assign(_gg=viewQ["GRAVIDADE"].isin(grav_gg).astype(int))

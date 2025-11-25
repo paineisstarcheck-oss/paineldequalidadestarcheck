@@ -1103,7 +1103,7 @@ with col_esq:
     st.dataframe(rec, use_container_width=True, hide_index=True)
 
 with col_dir:
-    st.markdown('<div class="section">⚖️ Calibração por analista (% GG)</div>', unsafe_allow_html=True)
+ st.markdown('<div class="section">⚖️ Calibração por analista (% GG)</div>', unsafe_allow_html=True)
     if "ANALISTA" in viewQ.columns and "GRAVIDADE" in viewQ.columns:
         ana = (
             viewQ.assign(_gg=viewQ["GRAVIDADE"].isin(grav_gg).astype(int))
@@ -1111,7 +1111,8 @@ with col_dir:
                  .mean()
                  .reset_index(name="%GG")
         )
-        ana = ana.sort_values("%GG", descending=False if False else True)
+        # ordena do maior %GG para o menor
+        ana = ana.sort_values("%GG", ascending=False)
         ana["%GG"] = (ana["%GG"] * 100).round(1)
 
         st.altair_chart(

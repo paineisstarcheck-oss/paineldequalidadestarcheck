@@ -305,12 +305,21 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             c_unid = _find_col(cols, "UNIDADE")
             c_meta = _find_col(cols, "META_MENSAL", "META MENSAL", "META")
             c_du   = _find_col(cols, "DIAS ÚTEIS", "DIAS UTEIS", "DIAS_UTEIS")
+            # NOVO: coluna opcional de perfil / tempo de casa (novato x veterano)
+            c_perf = _find_col(
+                cols,
+                "PERFIL", "GRUPO", "CATEGORIA", "TIPO",
+                "TEMPO_CASA", "TEMPO CASA", "TEMPO DE CASA"
+            )
+
             out = pd.DataFrame()
             out["VISTORIADOR"] = dm[c_vist].astype(str).map(_upper) if c_vist else ""
             out["UNIDADE"] = dm[c_unid].astype(str).map(_upper) if c_unid else ""
             out["META_MENSAL"] = pd.to_numeric(dm[c_meta], errors="coerce").fillna(0).astype(int) if c_meta else 0
             out["DIAS_UTEIS"]  = pd.to_numeric(dm[c_du], errors="coerce").fillna(np.nan)
             out["DIAS_UTEIS"]  = out["DIAS_UTEIS"].astype(float).round().astype("Int64")
+            # Perfil novato/veterano (texto, já em maiúsculas)
+            out["PERFIL_NV"] = dm[c_perf].astype(str).map(_upper) if c_perf else ""
             out["YM"] = ym or ""
             metas = out
     except Exception:
@@ -366,7 +375,7 @@ if show_tech:
     if er_q:
         with st.expander("Falhas (Qualidade)"):
             for sid, e in er_q: st.write(sid); st.exception(e)
-    if ok_p: st.success("Produção conectada em:\n\n- " + "\n- ".join(ok_p))
+    if ok_p: st.success("Produção conectado em:\n\n- " + "\n- ".join(ok_p))
     if er_p:
         with st.expander("Falhas (Produção)"):
             for sid, e in er_p: st.write(sid); st.exception(e)
@@ -376,7 +385,7 @@ if not dq_all:
 
 dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
-dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
+dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","PERFIL_NV","YM"])
 
 
 # ------------------ FILTROS PRINCIPAIS ------------------
@@ -1166,6 +1175,32 @@ base["%ERRO_GG"] = ((base["erros_gg"] / den) * 100).round(1)
 base["FAROL_%ERRO"]    = base["%ERRO"].apply(lambda v: _farol(v, META_ERRO))
 base["FAROL_%ERRO_GG"] = base["%ERRO_GG"].apply(lambda v: _farol(v, META_ERRO_GG))
 
+# ------------------ PERFIL NOVATO × VETERANO ------------------
+ym_cur = f"{ref_year}-{ref_month:02d}"
+
+if not dfMetas.empty and "VISTORIADOR" in dfMetas.columns and "PERFIL_NV" in dfMetas.columns:
+    metas_cur_nv = dfMetas.copy()
+    if "YM" in metas_cur_nv.columns:
+        metas_cur_nv = metas_cur_nv[metas_cur_nv["YM"].fillna("").astype(str) == ym_cur]
+    perf = metas_cur_nv[["VISTORIADOR","PERFIL_NV"]].drop_duplicates()
+    base = base.merge(perf, on="VISTORIADOR", how="left")
+else:
+    base["PERFIL_NV"] = ""
+
+perf_vals = sorted([p for p in base["PERFIL_NV"].dropna().unique().tolist() if p])
+sel_perf_code = None
+if perf_vals:
+    label_map_perf = {"NOVATO": "Novatos", "VETERANO": "Veteranos"}
+    options = ["Todos"]
+    for p in perf_vals:
+        options.append(label_map_perf.get(p, p.title()))
+    sel = st.radio("Perfil (tempo de casa)", options=options, horizontal=True, key="perfil_nv_filter")
+    if sel != "Todos":
+        inv_map = {label_map_perf.get(p, p.title()): p for p in perf_vals}
+        sel_perf_code = inv_map.get(sel)
+    if sel_perf_code:
+        base = base[base["PERFIL_NV"] == sel_perf_code]
+
 # ------------------ FORMATAÇÃO E ORDENAÇÃO ------------------
 fmt = base.copy()
 for c in ["vist","rev","liq","erros","erros_gg"]:
@@ -1270,7 +1305,6 @@ mtd = mtd_all.copy()
 erros_mtd = (mtd.groupby("VISTORIADOR", dropna=False)["ERRO"]
              .size().reset_index(name="ERROS_MTD"))
 
-ym_cur = f"{ref_year}-{ref_month:02d}"
 metas_cur = dfMetas[dfMetas["YM"].fillna("").astype(str) == ym_cur].copy() if "YM" in dfMetas.columns else dfMetas.copy()
 du_map = {}
 if not metas_cur.empty and "DIAS_UTEIS" in metas_cur.columns:
@@ -1583,4 +1617,5 @@ else:
     df_fraude = df_fraude[cols_fraude].sort_values(["DATA","UNIDADE","VISTORIADOR"])
     st.dataframe(df_fraude, use_container_width=True, hide_index=True)
     st.caption('<div class="table-note">* Somente linhas cujo ERRO é exatamente “TENTATIVA DE FRAUDE”.</div>', unsafe_allow_html=True)
+
 

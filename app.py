@@ -234,9 +234,11 @@ def read_quality_month(month_id: str) -> Tuple[pd.DataFrame, str]:
         elif cu in {"OBSERVAÇÃO","OBSERVACAO","OBS"}: rename_map[c] = "OBS"
         elif cu == "ANALISTA": rename_map[c] = "ANALISTA"
         elif cu in {"EMPRESA","MARCA"}: rename_map[c] = "EMPRESA"
+        elif cu in {"TEMPO DE CASA","TEMPO_DE_CASA","TEMPO CASA","TEMPOCASA"}:
+            rename_map[c] = "TEMPO_CASA"
     dq = dq.rename(columns=rename_map)
 
-    for need in ["DATA","PLACA","VISTORIADOR","UNIDADE","ERRO","GRAVIDADE","ANALISTA","EMPRESA"]:
+    for need in ["DATA","PLACA","VISTORIADOR","UNIDADE","ERRO","GRAVIDADE","ANALISTA","EMPRESA","TEMPO_CASA"]:
         if need not in dq.columns:
             dq[need] = ""
 
@@ -247,7 +249,7 @@ def read_quality_month(month_id: str) -> Tuple[pd.DataFrame, str]:
     else:
         dq["DATA_TS"] = pd.NaT
 
-    for c in ["VISTORIADOR","UNIDADE","ERRO","GRAVIDADE","ANALISTA","EMPRESA","PLACA"]:
+    for c in ["VISTORIADOR","UNIDADE","ERRO","GRAVIDADE","ANALISTA","EMPRESA","PLACA","TEMPO_CASA"]:
         dq[c] = dq[c].astype(str).map(_upper)
 
     dq = dq[(dq["VISTORIADOR"] != "") & (dq["ERRO"] != "")]
@@ -305,21 +307,12 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             c_unid = _find_col(cols, "UNIDADE")
             c_meta = _find_col(cols, "META_MENSAL", "META MENSAL", "META")
             c_du   = _find_col(cols, "DIAS ÚTEIS", "DIAS UTEIS", "DIAS_UTEIS")
-            # NOVO: coluna opcional de perfil / tempo de casa (novato x veterano)
-            c_perf = _find_col(
-                cols,
-                "PERFIL", "GRUPO", "CATEGORIA", "TIPO",
-                "TEMPO_CASA", "TEMPO CASA", "TEMPO DE CASA"
-            )
-
             out = pd.DataFrame()
             out["VISTORIADOR"] = dm[c_vist].astype(str).map(_upper) if c_vist else ""
             out["UNIDADE"] = dm[c_unid].astype(str).map(_upper) if c_unid else ""
             out["META_MENSAL"] = pd.to_numeric(dm[c_meta], errors="coerce").fillna(0).astype(int) if c_meta else 0
             out["DIAS_UTEIS"]  = pd.to_numeric(dm[c_du], errors="coerce").fillna(np.nan)
             out["DIAS_UTEIS"]  = out["DIAS_UTEIS"].astype(float).round().astype("Int64")
-            # Perfil novato/veterano (texto, já em maiúsculas)
-            out["PERFIL_NV"] = dm[c_perf].astype(str).map(_upper) if c_perf else ""
             out["YM"] = ym or ""
             metas = out
     except Exception:
@@ -375,7 +368,7 @@ if show_tech:
     if er_q:
         with st.expander("Falhas (Qualidade)"):
             for sid, e in er_q: st.write(sid); st.exception(e)
-    if ok_p: st.success("Produção conectado em:\n\n- " + "\n- ".join(ok_p))
+    if ok_p: st.success("Produção conectada em:\n\n- " + "\n- ".join(ok_p))
     if er_p:
         with st.expander("Falhas (Produção)"):
             for sid, e in er_p: st.write(sid); st.exception(e)
@@ -385,7 +378,11 @@ if not dq_all:
 
 dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
-dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","PERFIL_NV","YM"])
+dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
+
+# Normaliza TEMPO_CASA (NOVATO / VETERANO)
+if "TEMPO_CASA" in dfQ.columns:
+    dfQ["TEMPO_CASA"] = dfQ["TEMPO_CASA"].astype(str).map(_upper)
 
 
 # ------------------ FILTROS PRINCIPAIS ------------------
@@ -429,11 +426,25 @@ with col2:
         f_unids = st.multiselect("Unidades (opcional)", unids, default=unids)
     with c22:
         f_vists = st.multiselect("Vistoriadores (opcional)", vist_opts)
+    # NOVO: filtro de tempo de casa no cabeçalho
+    perfil_sel = st.radio(
+        "Perfil (tempo de casa)",
+        ["Todos", "Novatos", "Veteranos"],
+        horizontal=True,
+        key="perfil_tempo_casa"
+    )
 
 if f_unids and "UNIDADE" in viewQ.columns:
     viewQ = viewQ[viewQ["UNIDADE"].isin([_upper(u) for u in f_unids])]
 if f_vists:
     viewQ = viewQ[viewQ["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+
+# Aplica filtro NOVATO / VETERANO na base de qualidade
+set_vists_perfil = None
+if "TEMPO_CASA" in viewQ.columns and perfil_sel != "Todos":
+    alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
+    viewQ = viewQ[viewQ["TEMPO_CASA"] == alvo]
+    set_vists_perfil = set(viewQ["VISTORIADOR"].unique())
 
 if viewQ.empty:
     st.info("Sem registros de Qualidade no período/filtros."); st.stop()
@@ -452,8 +463,14 @@ if not dfP.empty:
         viewP = viewP[viewP["UNIDADE"].isin([_upper(u) for u in f_unids])]
     if f_vists and "VISTORIADOR" in viewP.columns:
         viewP = viewP[viewP["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+
+    # Aplica filtro de perfil também na produção
+    if set_vists_perfil is not None and "VISTORIADOR" in viewP.columns:
+        viewP = viewP[viewP["VISTORIADOR"].isin(set_vists_perfil)]
 else:
     viewP = dfP.copy()
+    if set_vists_perfil is not None and "VISTORIADOR" in viewP.columns:
+        viewP = viewP[viewP["VISTORIADOR"].isin(set_vists_perfil)]
 
 
 # ------------------ KPIs ------------------
@@ -492,6 +509,9 @@ if "UNIDADE" in prev_base_cards.columns and len(f_unids):
     prev_base_cards = prev_base_cards[prev_base_cards["UNIDADE"].isin([_upper(u) for u in f_unids])]
 if "VISTORIADOR" in prev_base_cards.columns and len(f_vists):
     prev_base_cards = prev_base_cards[prev_base_cards["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+if "TEMPO_CASA" in prev_base_cards.columns and perfil_sel != "Todos":
+    alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
+    prev_base_cards = prev_base_cards[prev_base_cards["TEMPO_CASA"] == alvo]
 
 prev_total = int(len(prev_base_cards))
 prev_gg = int(prev_base_cards["GRAVIDADE"].isin(grav_gg).sum()) if "GRAVIDADE" in prev_base_cards.columns else 0
@@ -529,6 +549,9 @@ if "UNIDADE" in mtd_all.columns and len(f_unids):
     mtd_all = mtd_all[mtd_all["UNIDADE"].isin([_upper(u) for u in f_unids])]
 if "VISTORIADOR" in mtd_all.columns and len(f_vists):
     mtd_all = mtd_all[mtd_all["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+if "TEMPO_CASA" in mtd_all.columns and perfil_sel != "Todos":
+    alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
+    mtd_all = mtd_all[mtd_all["TEMPO_CASA"] == alvo]
 
 erros_mtd_total = int(len(mtd_all))
 erros_mtd_gg = int(mtd_all["GRAVIDADE"].isin(grav_gg).sum()) if "GRAVIDADE" in mtd_all.columns else 0
@@ -666,6 +689,9 @@ if start_d == end_d == today_local:
         df_yest = df_yest[df_yest["UNIDADE"].isin([_upper(u) for u in f_unids])]
     if len(f_vists) and "VISTORIADOR" in df_yest.columns:
         df_yest = df_yest[df_yest["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+    if "TEMPO_CASA" in df_yest.columns and perfil_sel != "Todos":
+        alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
+        df_yest = df_yest[df_yest["TEMPO_CASA"] == alvo]
 
     if "DATA_TS" not in df_yest.columns:
         df_yest["DATA_TS"] = pd.to_datetime(df_yest["DATA"], errors="coerce")
@@ -903,7 +929,7 @@ else:
 if not fast_mode:
     ex1, ex2 = st.columns(2)
 
-    # ===== PARETO (corrigido: caso 1 categoria não usa slider) =====
+    # ===== PARETO =====
     with ex1:
         st.markdown('<div class="section">📈 Pareto de erros</div>', unsafe_allow_html=True)
 
@@ -1085,7 +1111,7 @@ with col_dir:
                  .mean()
                  .reset_index(name="%GG")
         )
-        ana = ana.sort_values("%GG", ascending=False)
+        ana = ana.sort_values("%GG", descending=False if False else True)
         ana["%GG"] = (ana["%GG"] * 100).round(1)
 
         st.altair_chart(
@@ -1149,12 +1175,17 @@ if prod["vist"].sum() == 0:
             prod_month = prod_month[prod_month["UNIDADE"].isin([_upper(u) for u in f_unids])]
         if "VISTORIADOR" in prod_month.columns and len(f_vists):
             prod_month = prod_month[prod_month["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+        if set_vists_perfil is not None and "VISTORIADOR" in prod_month.columns:
+            prod_month = prod_month[prod_month["VISTORIADOR"].isin(set_vists_perfil)]
         prod = _make_prod(prod_month)
         if prod["vist"].sum() > 0:
             fallback_note = "Usando produção do mês (fallback), pois não houve produção no período selecionado."
 
 if prod["vist"].sum() == 0 and not dfP.empty:
-    prod = _make_prod(dfP.copy())
+    prod_all = dfP.copy()
+    if set_vists_perfil is not None and "VISTORIADOR" in prod_all.columns:
+        prod_all = prod_all[prod_all["VISTORIADOR"].isin(set_vists_perfil)]
+    prod = _make_prod(prod_all)
     fallback_note = "Usando produção global (fallback), pois não há produção no mês/período selecionado."
 
 # ------------------ QUALIDADE ------------------
@@ -1174,32 +1205,6 @@ base["%ERRO"]    = ((base["erros"]    / den) * 100).round(1)
 base["%ERRO_GG"] = ((base["erros_gg"] / den) * 100).round(1)
 base["FAROL_%ERRO"]    = base["%ERRO"].apply(lambda v: _farol(v, META_ERRO))
 base["FAROL_%ERRO_GG"] = base["%ERRO_GG"].apply(lambda v: _farol(v, META_ERRO_GG))
-
-# ------------------ PERFIL NOVATO × VETERANO ------------------
-ym_cur = f"{ref_year}-{ref_month:02d}"
-
-if not dfMetas.empty and "VISTORIADOR" in dfMetas.columns and "PERFIL_NV" in dfMetas.columns:
-    metas_cur_nv = dfMetas.copy()
-    if "YM" in metas_cur_nv.columns:
-        metas_cur_nv = metas_cur_nv[metas_cur_nv["YM"].fillna("").astype(str) == ym_cur]
-    perf = metas_cur_nv[["VISTORIADOR","PERFIL_NV"]].drop_duplicates()
-    base = base.merge(perf, on="VISTORIADOR", how="left")
-else:
-    base["PERFIL_NV"] = ""
-
-perf_vals = sorted([p for p in base["PERFIL_NV"].dropna().unique().tolist() if p])
-sel_perf_code = None
-if perf_vals:
-    label_map_perf = {"NOVATO": "Novatos", "VETERANO": "Veteranos"}
-    options = ["Todos"]
-    for p in perf_vals:
-        options.append(label_map_perf.get(p, p.title()))
-    sel = st.radio("Perfil (tempo de casa)", options=options, horizontal=True, key="perfil_nv_filter")
-    if sel != "Todos":
-        inv_map = {label_map_perf.get(p, p.title()): p for p in perf_vals}
-        sel_perf_code = inv_map.get(sel)
-    if sel_perf_code:
-        base = base[base["PERFIL_NV"] == sel_perf_code]
 
 # ------------------ FORMATAÇÃO E ORDENAÇÃO ------------------
 fmt = base.copy()
@@ -1305,6 +1310,7 @@ mtd = mtd_all.copy()
 erros_mtd = (mtd.groupby("VISTORIADOR", dropna=False)["ERRO"]
              .size().reset_index(name="ERROS_MTD"))
 
+ym_cur = f"{ref_year}-{ref_month:02d}"
 metas_cur = dfMetas[dfMetas["YM"].fillna("").astype(str) == ym_cur].copy() if "YM" in dfMetas.columns else dfMetas.copy()
 du_map = {}
 if not metas_cur.empty and "DIAS_UTEIS" in metas_cur.columns:
@@ -1378,7 +1384,7 @@ if not fast_mode:
     if len(f_vist):     det = det[det["VISTORIADOR"].isin(f_vist)]    if "VISTORIADOR" in det.columns else det
     if len(f_analista): det = det[det["ANALISTA"].isin(f_analista)]   if "ANALISTA"   in det.columns else det
 
-    det_cols = ["DATA","UNIDADE","VISTORIADOR","PLACA","ERRO","GRAVIDADE","ANALISTA","OBS"]
+    det_cols = ["DATA","UNIDADE","VISTORIADOR","PLACA","ERRO","GRAVIDADE","ANALISTA","OBS","TEMPO_CASA"]
     for c in det_cols:
         if c not in det.columns: det[c] = ""
     det = det[det_cols].sort_values(["DATA","UNIDADE","VISTORIADOR"])
@@ -1611,11 +1617,9 @@ df_fraude = viewQ[fraude_mask].copy()
 if df_fraude.empty:
     st.info("Nenhum registro de Tentativa de Fraude no período/filtros selecionados.")
 else:
-    cols_fraude = ["DATA","UNIDADE","VISTORIADOR","PLACA","ERRO","GRAVIDADE","ANALISTA","OBS"]
+    cols_fraude = ["DATA","UNIDADE","VISTORIADOR","PLACA","ERRO","GRAVIDADE","ANALISTA","OBS","TEMPO_CASA"]
     for c in cols_fraude:
         if c not in df_fraude.columns: df_fraude[c] = ""
     df_fraude = df_fraude[cols_fraude].sort_values(["DATA","UNIDADE","VISTORIADOR"])
     st.dataframe(df_fraude, use_container_width=True, hide_index=True)
     st.caption('<div class="table-note">* Somente linhas cujo ERRO é exatamente “TENTATIVA DE FRAUDE”.</div>', unsafe_allow_html=True)
-
-

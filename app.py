@@ -259,7 +259,14 @@ def read_quality_month(month_id: str) -> Tuple[pd.DataFrame, str]:
 # ------------------ LEITURA / PRODUÇÃO + METAS (com cache) ------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame, str]:
-    """Lê a planilha mensal de produção (aba 1) e, se existir, a aba 'METAS'."""
+    """
+    Lê a planilha mensal de produção (aba 1) e, se existir, a aba 'METAS'.
+
+    Ajuste para ficar alinhado ao painel de Produção:
+    - Cada linha = 1 vistoria.
+    - Revistoria = mesma UNIDADE + mesmo CHASSI a partir da 2ª ocorrência.
+    - IS_REV = 1 para revistoria, 0 para vistoria principal.
+    """
     sh = client.open_by_key(month_sheet_id)
     title = sh.title or month_sheet_id
 
@@ -273,14 +280,17 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
         col_chas = "CHASSI" if "CHASSI" in df.columns else None
         col_per  = "PERITO" if "PERITO" in df.columns else None
         col_dig  = "DIGITADOR" if "DIGITADOR" in df.columns else None
+
         req = [col_unid, col_data, col_chas, (col_per or col_dig)]
         if any(r is None for r in req):
             df = pd.DataFrame()
         else:
+            # Normalização básica
             df[col_unid] = df[col_unid].map(_upper)
             df["__DATA__"] = df[col_data].apply(parse_date_any)
             df[col_chas] = df[col_chas].map(_upper)
 
+            # Vistoriador (prioriza PERITO, depois DIGITADOR)
             if col_per and col_dig:
                 df["VISTORIADOR"] = np.where(
                     df[col_per].astype(str).str.strip() != "",
@@ -292,9 +302,19 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             else:
                 df["VISTORIADOR"] = df[col_dig].map(_upper)
 
-            df = df.sort_values(["__DATA__", col_chas], kind="mergesort").reset_index(drop=True)
-            df["__ORD__"] = df.groupby(col_chas).cumcount()
+            # Remove linhas sem data, chassi, unidade ou vistoriador
+            df = df[
+                df["__DATA__"].notna() &
+                df[col_chas].astype(str).str.strip().ne("") &
+                df[col_unid].astype(str).str.strip().ne("") &
+                df["VISTORIADOR"].astype(str).str.strip().ne("")
+            ].copy()
+
+            # Ordena e calcula revistoria por UNIDADE + CHASSI
+            df = df.sort_values(["__DATA__", col_unid, col_chas], kind="mergesort").reset_index(drop=True)
+            df["__ORD__"] = df.groupby([col_unid, col_chas]).cumcount()
             df["IS_REV"] = (df["__ORD__"] >= 1).astype(int)
+
     metas = pd.DataFrame()
 
     try:
@@ -377,8 +397,12 @@ if not dq_all:
     st.error("Não consegui ler dados de Qualidade de nenhum mês."); st.stop()
 
 dfQ = pd.concat(dq_all, ignore_index=True)
-dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
-dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
+dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(
+    columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"]
+)
+dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(
+    columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"]
+)
 
 # Normaliza TEMPO_CASA (NOVATO / VETERANO)
 if "TEMPO_CASA" in dfQ.columns:
@@ -822,12 +846,18 @@ if "UNIDADE" in viewQ.columns:
 
             by_city_gg = by_city_gg.merge(prod_city, on="UNIDADE", how="left").fillna({"VIST": 0})
 
-            by_city_gg["%ERRO_GG"] = np.where(by_city_gg["VIST"] > 0,
-                                              (by_city_gg["QTD_GG"] / by_city_gg["VIST"]) * 100, np.nan)
+            by_city_gg["%ERRO_GG"] = np.where(
+                by_city_gg["VIST"] > 0,
+                (by_city_gg["QTD_GG"] / by_city_gg["VIST"]) * 100,
+                np.nan
+            )
             if by_city_gg["%ERRO_GG"].isna().all():
                 total_gg_global = by_city_gg["QTD_GG"].sum()
-                by_city_gg["%ERRO_GG"] = np.where(total_gg_global > 0,
-                                                  (by_city_gg["QTD_GG"] / total_gg_global) * 100, np.nan)
+                by_city_gg["%ERRO_GG"] = np.where(
+                    total_gg_global > 0,
+                    (by_city_gg["QTD_GG"] / total_gg_global) * 100,
+                    np.nan
+                )
                 y2_title_gg = "% dos erros GG"
             else:
                 y2_title_gg = "% de erro GG (GG/vistorias)"
@@ -1270,11 +1300,8 @@ else:
 
     # Aplicar cores nas colunas %ERRO (G) e %ERRO_GG (H)
     for i, (_, r) in enumerate(fmt_sorted.iterrows(), start=2):
-        fill_total = _fill_from_farol(r.get("FAROL_%ERRO"))
-        fill_gg    = _fill_from_farol(r.get("FAROL_%ERRO_GG"))
-
-        ws[f"G{i}"].fill = fill_total
-        ws[f"H{i}"].fill = fill_gg
+        ws[f"G{i}"].fill = _fill_from_farol(r.get("FAROL_%ERRO"))
+        ws[f"H{i}"].fill = _fill_from_farol(r.get("FAROL_%ERRO_GG"))
 
         ws[f"G{i}"].alignment = Alignment(horizontal="center")
         ws[f"H{i}"].alignment = Alignment(horizontal="center")
@@ -1525,8 +1552,8 @@ if not fast_mode:
 
         def _status_pp(delta):
             if pd.isna(delta): return "—"
-            if delta < 0:     return f"Melhorou (↓ {abs(delta):.1f} pp)"
-            if delta > 0:     return f"Piorou (↑ {delta:.1f} pp)"
+            if delta < 0:     return "Melhorou (↓ {0:.1f} pp)".format(abs(delta))
+            if delta > 0:     return "Piorou (↑ {0:.1f} pp)".format(delta)
             return "Sem alteração (↔)"
 
         for i in range(1, k):

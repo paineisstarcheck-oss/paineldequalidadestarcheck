@@ -1651,3 +1651,128 @@ else:
     df_fraude = df_fraude[cols_fraude].sort_values(["DATA","UNIDADE","VISTORIADOR"])
     st.dataframe(df_fraude, use_container_width=True, hide_index=True)
     st.caption('<div class="table-note">* Somente linhas cujo ERRO é exatamente “TENTATIVA DE FRAUDE”.</div>', unsafe_allow_html=True)
+
+# ------------------ HISTÓRICO BOTTOM 5 (últimos 3 meses) ------------------
+st.markdown("---")
+st.markdown(
+    '<div class="section">📚 Histórico dos Bottom 5 (últimos 3 meses)</div>',
+    unsafe_allow_html=True
+)
+
+# Nomes dos 5 piores já calculados acima
+bottom_names = []
+try:
+    bottom_names = worst5["VISTORIADOR"].astype(str).tolist()
+except Exception:
+    bottom_names = []
+
+if not bottom_names:
+    st.info("Ainda não há vistoriadores no ranking de piores para montar o histórico.")
+else:
+    # Garante que temos a lista de meses ordenada (ym_all já existe: 'AAAA-MM')
+    try:
+        idx_cur = ym_all.index(ym_sel)
+    except ValueError:
+        idx_cur = len(ym_all) - 1
+
+    # Últimos 3 meses: atual + 2 anteriores (se existirem)
+    ini = max(0, idx_cur - 2)
+    meses_janela = ym_all[ini: idx_cur + 1]
+
+    if not meses_janela:
+        st.info("Não há meses suficientes na base para montar o histórico.")
+    else:
+        # DataFrame base com os nomes dos bottom 5
+        hist_df = pd.DataFrame({"VISTORIADOR": sorted(set(bottom_names))})
+
+        # Para legenda
+        labels_legenda = []
+
+        for ym in meses_janela:
+            ano = int(ym[:4])
+            mes = int(ym[5:7])
+            label_mes = f"{mes:02d}/{ano}"
+            labels_legenda.append(label_mes)
+
+            # Recorte de QUALIDADE daquele mês
+            dq_m = dfQ.copy()
+            dt_q = pd.to_datetime(dq_m["DATA"], errors="coerce")
+            mask_mq = (dt_q.dt.year.eq(ano) & dt_q.dt.month.eq(mes))
+            dq_m = dq_m[mask_mq].copy()
+
+            # Aplica mesmos filtros de UNIDADE e PERFIL (Tempo de casa)
+            if len(f_unids) and "UNIDADE" in dq_m.columns:
+                dq_m = dq_m[dq_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
+            if "TEMPO_CASA" in dq_m.columns and perfil_sel != "Todos":
+                alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
+                dq_m = dq_m[dq_m["TEMPO_CASA"] == alvo]
+
+            # Recorte de PRODUÇÃO daquele mês
+            if not dfP.empty:
+                dp_m = dfP.copy()
+                dt_p = pd.to_datetime(dp_m["__DATA__"], errors="coerce")
+                mask_mp = (dt_p.dt.year.eq(ano) & dt_p.dt.month.eq(mes))
+                dp_m = dp_m[mask_mp].copy()
+
+                if len(f_unids) and "UNIDADE" in dp_m.columns:
+                    dp_m = dp_m[dp_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
+                if set_vists_perfil is not None and "VISTORIADOR" in dp_m.columns:
+                    dp_m = dp_m[dp_m["VISTORIADOR"].isin(set_vists_perfil)]
+            else:
+                dp_m = dfP.copy()
+
+            # Produção agrupada (reaproveita função _make_prod)
+            prod_m = _make_prod(dp_m)
+
+            # Qualidade agrupada
+            if dq_m.empty:
+                qual_m = pd.DataFrame(columns=["VISTORIADOR", "erros", "erros_gg"])
+            else:
+                qual_m = (
+                    dq_m.groupby("VISTORIADOR", dropna=False)
+                        .agg(
+                            erros=("ERRO", "size"),
+                            erros_gg=("GRAVIDADE", lambda s: s.isin(grav_gg).sum())
+                        )
+                        .reset_index()
+                )
+
+            # Junta produção + qualidade
+            base_m = prod_m.merge(qual_m, on="VISTORIADOR", how="outer").fillna(0)
+
+            # Calcula %ERRO usando o mesmo denominador (bruta ou líquida)
+            den_hist = base_m["liq"] if denom_mode.startswith("Líquida") else base_m["vist"]
+            den_hist = den_hist.replace({0: np.nan})
+
+            base_m["%ERRO"] = ((base_m["erros"] / den_hist) * 100).round(1)
+
+            # Foca só nos bottom 5
+            base_m = base_m[base_m["VISTORIADOR"].isin(bottom_names)].copy()
+
+            # Mantém apenas colunas que vamos usar
+            tmp = base_m[["VISTORIADOR", "erros", "%ERRO"]].copy()
+            tmp = tmp.rename(columns={
+                "erros": f"Erros {label_mes}",
+                "%ERRO": f"%Erro {label_mes}",
+            })
+
+            # Junta no histórico global
+            hist_df = hist_df.merge(tmp, on="VISTORIADOR", how="left")
+
+        # Formata %Erro para exibição
+        for c in hist_df.columns:
+            if c.startswith("%Erro"):
+                hist_df[c] = hist_df[c].map(
+                    lambda x: "—" if pd.isna(x) else f"{float(x):.1f}%".replace(".", ",")
+                )
+
+        st.dataframe(
+            hist_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(
+            "Histórico calculado considerando os mesmos filtros de unidade e perfil (tempo de casa). "
+            "Colunas mostram Erros e %Erro de cada um dos últimos meses disponíveis na base."
+        )

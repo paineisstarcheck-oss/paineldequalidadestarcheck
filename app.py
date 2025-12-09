@@ -1700,7 +1700,7 @@ else:
             mask_mq = (dt_q.dt.year.eq(ano) & dt_q.dt.month.eq(mes))
             dq_m = dq_m[mask_mq].copy()
 
-            # Aplica mesmos filtros de UNIDADE e PERFIL (Tempo de casa) usados no painel
+            # Mesmos filtros de UNIDADE e PERFIL (Tempo de casa)
             if len(f_unids) and "UNIDADE" in dq_m.columns:
                 dq_m = dq_m[dq_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
             if "TEMPO_CASA" in dq_m.columns and perfil_sel != "Todos":
@@ -1721,7 +1721,7 @@ else:
             else:
                 dp_m = dfP.copy()
 
-            # Produção agrupada (usa mesma função do painel)
+            # Produção agrupada (reaproveita função _make_prod)
             prod_m = _make_prod(dp_m)
 
             # Qualidade agrupada
@@ -1740,25 +1740,27 @@ else:
             # Junta produção + qualidade
             base_m = prod_m.merge(qual_m, on="VISTORIADOR", how="outer").fillna(0)
 
-            # Calcula %ERRO usando mesmo denominador (bruta ou líquida)
+            # Calcula %ERRO e %ERRO_GG usando o mesmo denominador (bruta ou líquida)
             den_hist = base_m["liq"] if denom_mode.startswith("Líquida") else base_m["vist"]
             den_hist = den_hist.replace({0: np.nan})
 
-            base_m["%ERRO"] = ((base_m["erros"] / den_hist) * 100).round(1)
+            base_m["%ERRO"] = ((base_m["erros"]    / den_hist) * 100).round(1)
+            base_m["%ERRO_GG"] = ((base_m["erros_gg"] / den_hist) * 100).round(1)
 
-            # Ranking do mês para saber quem foi bottom 5 naquele mês
+            # Ranking do mês para saber quem foi bottom 5 naquele mês (por %ERRO total)
             rank_m = base_m.copy()
             rank_m = rank_m[den_hist > 0].replace({np.inf: np.nan}).dropna(subset=["%ERRO"])
             rank_m = rank_m.sort_values("%ERRO", ascending=False)
             bottom_m = rank_m["VISTORIADOR"].astype(str).head(5).tolist()
 
             # Foca só nos bottom atuais (bottom_names)
-            tmp = base_m[["VISTORIADOR", "%ERRO"]].copy()
+            tmp = base_m[["VISTORIADOR", "%ERRO", "%ERRO_GG"]].copy()
             tmp["VISTORIADOR"] = tmp["VISTORIADOR"].astype(str)
             tmp = tmp[tmp["VISTORIADOR"].isin(bottom_names)]
 
             tmp = tmp.rename(columns={
-                "%ERRO": f"%Erro {label_mes}",
+                "%ERRO":    f"%Erro {label_mes}",
+                "%ERRO_GG": f"%Erro GG {label_mes}",
             })
             tmp[f"Bottom {label_mes}"] = tmp["VISTORIADOR"].isin(bottom_m)
 
@@ -1786,33 +1788,44 @@ else:
 
         # Formata %Erro e flags de bottom para ficar mais visual
         for c in hist_df.columns:
-            if c.startswith("%Erro "):
+            if c.startswith("%Erro GG "):
+                hist_df[c] = hist_df[c].map(
+                    lambda x: "—" if pd.isna(x) else f"{float(x):.1f}%".replace(".", ",")
+                )
+            elif c.startswith("%Erro "):
                 hist_df[c] = hist_df[c].map(
                     lambda x: "—" if pd.isna(x) else f"{float(x):.1f}%".replace(".", ",")
                 )
             if c.startswith("Bottom "):
-                hist_df[c] = hist_df[c].map(lambda v: "✅" if bool(v) else "—")
+                hist_df[c] = hist_df[c].map(lambda v: "🔴" if bool(v) else "—")
 
         # Ordena pelos mais reincidentes / pior %Erro atual
-        # (usa mês atual, que é o último em labels_legenda)
         col_pct_atual = f"%Erro {labels_legenda[-1]}"
         if col_pct_atual in hist_df.columns:
-            order_key = hist_df["Meses no bottom"] * 1000  # peso maior para reincidência
-            # tenta adicionar %Erro atual como desempate
+            order_key = hist_df["Meses no bottom"] * 1000
             try:
-                num_pct = hist_df[col_pct_atual].str.replace("%","").str.replace(",",".").astype(float)
+                num_pct = (
+                    hist_df[col_pct_atual]
+                    .astype(str)
+                    .str.replace("%", "")
+                    .str.replace(",", ".")
+                    .astype(float)
+                )
                 order_key = order_key + num_pct
             except Exception:
                 pass
             hist_df = hist_df.iloc[np.argsort(-order_key)].reset_index(drop=True)
 
-        # Escolhe colunas na ordem: nome, situação, por mês (%Erro + flag)
+        # Colunas na ordem: nome, situação, reincidência, depois meses
         cols_show = ["VISTORIADOR", "Situação", "Meses no bottom"]
         for label_mes in labels_legenda:
-            pct_col = f"%Erro {label_mes}"
-            btm_col = f"Bottom {label_mes}"
+            pct_col    = f"%Erro {label_mes}"
+            pctgg_col  = f"%Erro GG {label_mes}"
+            btm_col    = f"Bottom {label_mes}"
             if pct_col in hist_df.columns:
                 cols_show.append(pct_col)
+            if pctgg_col in hist_df.columns:
+                cols_show.append(pctgg_col)
             if btm_col in hist_df.columns:
                 cols_show.append(btm_col)
 
@@ -1825,9 +1838,9 @@ else:
         )
 
         legenda_txt = " · ".join(
-            [f"{lab}: coluna %Erro + ✅ se ficou entre os 5 piores no mês" for lab in labels_legenda]
+            [f"{lab}: %Erro, %Erro GG e 🔴 se ficou entre os 5 piores no mês" for lab in labels_legenda]
         )
         st.caption(
-            "Ícones da coluna **Situação** mostram a reincidência dos 5 piores do mês atual nos últimos meses. "
+            "Coluna **Situação** mostra a reincidência dos 5 piores do mês atual nos últimos meses. "
             + legenda_txt
         )

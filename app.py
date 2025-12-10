@@ -1685,6 +1685,8 @@ else:
     else:
         # Base com nomes dos bottom 5 (do mês atual)
         hist_df = pd.DataFrame({"VISTORIADOR": sorted(set(bottom_names))})
+        # CIDADE do colaborador (usa o mesmo city_map do bloco de %Erro)
+        hist_df["CIDADE"] = hist_df["VISTORIADOR"].map(city_map).fillna("")
 
         labels_legenda = []
 
@@ -1694,32 +1696,38 @@ else:
             label_mes = f"{mes:02d}/{ano}"
             labels_legenda.append(label_mes)
 
-            # Recorte de QUALIDADE daquele mês
-            dq_m = dfQ.copy()
-            dt_q = pd.to_datetime(dq_m["DATA"], errors="coerce")
-            mask_mq = (dt_q.dt.year.eq(ano) & dt_q.dt.month.eq(mes))
-            dq_m = dq_m[mask_mq].copy()
-
-            # Mesmos filtros de UNIDADE e PERFIL (Tempo de casa)
-            if len(f_unids) and "UNIDADE" in dq_m.columns:
-                dq_m = dq_m[dq_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
-            if "TEMPO_CASA" in dq_m.columns and perfil_sel != "Todos":
-                alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
-                dq_m = dq_m[dq_m["TEMPO_CASA"] == alvo]
-
-            # Recorte de PRODUÇÃO daquele mês
-            if not dfP.empty:
-                dp_m = dfP.copy()
-                dt_p = pd.to_datetime(dp_m["__DATA__"], errors="coerce")
-                mask_mp = (dt_p.dt.year.eq(ano) & dt_p.dt.month.eq(mes))
-                dp_m = dp_m[mask_mp].copy()
-
-                if len(f_unids) and "UNIDADE" in dp_m.columns:
-                    dp_m = dp_m[dp_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
-                if set_vists_perfil is not None and "VISTORIADOR" in dp_m.columns:
-                    dp_m = dp_m[dp_m["VISTORIADOR"].isin(set_vists_perfil)]
+            # --------- BASE DE QUALIDADE E PRODUÇÃO POR MÊS ---------
+            if ym == ym_sel:
+                # MÊS ATUAL → usa exatamente o mesmo recorte do painel
+                dq_m = viewQ.copy()
+                dp_m = viewP.copy()
             else:
-                dp_m = dfP.copy()
+                # MÊS ANTERIOR → mês cheio, com mesmos filtros de unidade/perfil
+                # Qualidade
+                dq_m = dfQ.copy()
+                dt_q = pd.to_datetime(dq_m["DATA"], errors="coerce")
+                mask_mq = (dt_q.dt.year.eq(ano) & dt_q.dt.month.eq(mes))
+                dq_m = dq_m[mask_mq].copy()
+
+                if len(f_unids) and "UNIDADE" in dq_m.columns:
+                    dq_m = dq_m[dq_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
+                if "TEMPO_CASA" in dq_m.columns and perfil_sel != "Todos":
+                    alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
+                    dq_m = dq_m[dq_m["TEMPO_CASA"] == alvo]
+
+                # Produção
+                if not dfP.empty:
+                    dp_m = dfP.copy()
+                    dt_p = pd.to_datetime(dp_m["__DATA__"], errors="coerce")
+                    mask_mp = (dt_p.dt.year.eq(ano) & dt_p.dt.month.eq(mes))
+                    dp_m = dp_m[mask_mp].copy()
+
+                    if len(f_unids) and "UNIDADE" in dp_m.columns:
+                        dp_m = dp_m[dp_m["UNIDADE"].isin([_upper(u) for u in f_unids])]
+                    if set_vists_perfil is not None and "VISTORIADOR" in dp_m.columns:
+                        dp_m = dp_m[dp_m["VISTORIADOR"].isin(set_vists_perfil)]
+                else:
+                    dp_m = dfP.copy()
 
             # Produção agrupada (reaproveita função _make_prod)
             prod_m = _make_prod(dp_m)
@@ -1765,6 +1773,13 @@ else:
             tmp[f"Bottom {label_mes}"] = tmp["VISTORIADOR"].isin(bottom_m)
 
             hist_df = hist_df.merge(tmp, on="VISTORIADOR", how="left")
+
+        # --- GARANTIR QUE O MÊS ATUAL USE EXATAMENTE O TOP 5 DO PAINEL ---
+        if labels_legenda:
+            col_bottom_cur = f"Bottom {labels_legenda[-1]}"
+            if col_bottom_cur in hist_df.columns:
+                nomes_bottom_atual = [str(v) for v in bottom_names]
+                hist_df[col_bottom_cur] = hist_df["VISTORIADOR"].astype(str).isin(nomes_bottom_atual)
 
         # Calcula quantos meses cada um apareceu no bottom
         bottom_cols = [c for c in hist_df.columns if c.startswith("Bottom ")]
@@ -1816,12 +1831,12 @@ else:
                 pass
             hist_df = hist_df.iloc[np.argsort(-order_key)].reset_index(drop=True)
 
-        # Colunas na ordem: nome, situação, reincidência, depois meses
-        cols_show = ["VISTORIADOR", "Situação", "Meses no bottom"]
+        # Colunas na ordem: cidade, nome, situação, reincidência, depois meses
+        cols_show = ["CIDADE", "VISTORIADOR", "Situação", "Meses no bottom"]
         for label_mes in labels_legenda:
-            pct_col    = f"%Erro {label_mes}"
-            pctgg_col  = f"%Erro GG {label_mes}"
-            btm_col    = f"Bottom {label_mes}"
+            pct_col   = f"%Erro {label_mes}"
+            pctgg_col = f"%Erro GG {label_mes}"
+            btm_col   = f"Bottom {label_mes}"
             if pct_col in hist_df.columns:
                 cols_show.append(pct_col)
             if pctgg_col in hist_df.columns:
@@ -1844,3 +1859,64 @@ else:
             "Coluna **Situação** mostra a reincidência dos 5 piores do mês atual nos últimos meses. "
             + legenda_txt
         )
+
+        # ---------- EXPORTAR EXCEL COLORIDO ----------
+        if not ok_openpyxl:
+            st.warning("openpyxl não disponível — exportação do histórico desativada.")
+        else:
+            wb2 = Workbook()
+            ws2 = wb2.active
+            ws2.title = "Histórico Bottom 5"
+
+            headers = list(out_hist.columns)
+            ws2.append(headers)
+
+            # índice da coluna Situação (para colorir)
+            idx_sit = headers.index("Situação") + 1
+
+            def _fill_situacao(txt: str) -> PatternFill:
+                txt = str(txt)
+                if "3 meses" in txt:
+                    return PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")  # vermelho claro
+                if "2 meses" in txt:
+                    return PatternFill(start_color="FFE599", end_color="FFE599", fill_type="solid")  # amarelo forte
+                if "Entrou agora" in txt:
+                    return PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # amarelo claro
+                if "Saiu do bottom" in txt:
+                    return PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")  # verde claro
+                return PatternFill(fill_type=None)
+
+            red_fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
+
+            for i, (_, r) in enumerate(out_hist.iterrows(), start=2):
+                ws2.append([r[col] for col in headers])
+
+                # cor da Situação
+                ws2.cell(row=i, column=idx_sit).fill = _fill_situacao(r.get("Situação", ""))
+
+                # colunas Bottom mm/aaaa → vermelho quando 🔴
+                for j, col in enumerate(headers, start=1):
+                    if col.startswith("Bottom "):
+                        if "🔴" in str(r.get(col, "")):
+                            ws2.cell(row=i, column=j).fill = red_fill
+
+            # larguras básicas
+            widths = {
+                "A": 16,   # CIDADE
+                "B": 28,   # VISTORIADOR
+                "C": 24,   # Situação
+                "D": 16,   # Meses no bottom
+            }
+            for col_letter, w in widths.items():
+                ws2.column_dimensions[col_letter].width = w
+
+            xbuf2 = io.BytesIO()
+            wb2.save(xbuf2)
+            xbuf2.seek(0)
+
+            st.download_button(
+                label="📥 Baixar histórico Bottom 5 (Excel)",
+                data=xbuf2,
+                file_name="historico_bottom5_tokyo.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )

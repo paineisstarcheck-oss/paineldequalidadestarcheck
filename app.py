@@ -1652,6 +1652,34 @@ else:
     st.dataframe(df_fraude, use_container_width=True, hide_index=True)
     st.caption('<div class="table-note">* Somente linhas cujo ERRO é exatamente “TENTATIVA DE FRAUDE”.</div>', unsafe_allow_html=True)
 
+# ================== MAPA VISTORIADOR → CIDADE ==================
+# Tenta montar o mapa primeiro pela PRODUÇÃO. Se não tiver,
+# usa a base de Qualidade. Se não tiver nenhuma, fica vazio.
+city_map = {}
+
+try:
+    base_city = pd.DataFrame()
+
+    if ("UNIDADE" in viewP.columns) and ("VISTORIADOR" in viewP.columns) and (not viewP.empty):
+        base_city = viewP[["VISTORIADOR", "UNIDADE"]].copy()
+    elif ("UNIDADE" in dfP.columns) and ("VISTORIADOR" in dfP.columns) and (not dfP.empty):
+        base_city = dfP[["VISTORIADOR", "UNIDADE"]].copy()
+    elif ("UNIDADE" in viewQ.columns) and ("VISTORIADOR" in viewQ.columns):
+        base_city = viewQ[["VISTORIADOR", "UNIDADE"]].copy()
+    elif ("UNIDADE" in dfQ.columns) and ("VISTORIADOR" in dfQ.columns):
+        base_city = dfQ[["VISTORIADOR", "UNIDADE"]].copy()
+
+    if not base_city.empty:
+        base_city["VISTORIADOR"] = base_city["VISTORIADOR"].astype(str).map(_upper)
+        base_city["UNIDADE"] = base_city["UNIDADE"].astype(str).map(_upper)
+        base_city = base_city.drop_duplicates(subset=["VISTORIADOR"])
+        city_map = dict(zip(base_city["VISTORIADOR"], base_city["UNIDADE"]))
+    else:
+        city_map = {}
+except Exception:
+    city_map = {}
+# ===============================================================
+
 # ------------------ HISTÓRICO BOTTOM 5 (últimos 3 meses) ------------------
 st.markdown("---")
 st.markdown(
@@ -1685,7 +1713,7 @@ else:
     else:
         # Base com nomes dos bottom 5 (do mês atual)
         hist_df = pd.DataFrame({"VISTORIADOR": sorted(set(bottom_names))})
-        # CIDADE do colaborador (usa o mesmo city_map do bloco de %Erro)
+        # CIDADE do colaborador
         hist_df["CIDADE"] = hist_df["VISTORIADOR"].map(city_map).fillna("")
 
         labels_legenda = []
@@ -1917,6 +1945,6 @@ else:
             st.download_button(
                 label="📥 Baixar histórico Bottom 5 (Excel)",
                 data=xbuf2,
-                file_name="historico_bottom5_tokyo.xlsx",
+                file_name="historico_bottom5_starcheck.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )

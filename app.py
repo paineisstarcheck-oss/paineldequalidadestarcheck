@@ -272,6 +272,7 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
         col_chas = "CHASSI" if "CHASSI" in df.columns else None
         col_per  = "PERITO" if "PERITO" in df.columns else None
         col_dig  = "DIGITADOR" if "DIGITADOR" in df.columns else None
+
         req = [col_unid, col_data, col_chas, (col_per or col_dig)]
         if any(r is None for r in req):
             df = pd.DataFrame()
@@ -294,6 +295,7 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             df = df.sort_values(["__DATA__", col_chas], kind="mergesort").reset_index(drop=True)
             df["__ORD__"] = df.groupby(col_chas).cumcount()
             df["IS_REV"] = (df["__ORD__"] >= 1).astype(int)
+
     metas = pd.DataFrame()
 
     try:
@@ -338,6 +340,16 @@ if sel_meses:
 if sel_meses_p:
     idx_p = idx_p[idx_p["MÊS"].isin(sel_meses_p)]
 
+# >>> FIX DUPLICIDADE (1/2): dedup no índice de PRODUÇÃO por arquivo (URL) + mês
+# Evita carregar o mesmo mês/arquivo duas vezes caso o ARQUIVOS tenha linhas repetidas.
+if not idx_p.empty and "URL" in idx_p.columns:
+    idx_p["_SID_"] = idx_p["URL"].apply(_sheet_id)
+    # se existir MÊS, dedup por (SID + MÊS); senão, por SID
+    if "MÊS" in idx_p.columns:
+        idx_p = idx_p.drop_duplicates(subset=["_SID_", "MÊS"], keep="first").copy()
+    else:
+        idx_p = idx_p.drop_duplicates(subset=["_SID_"], keep="first").copy()
+
 dq_all, ok_q, er_q = [], [], []
 for _, r in idx_q.iterrows():
     sid = _sheet_id(r["URL"])
@@ -379,22 +391,31 @@ dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
 dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
 
+# >>> FIX DUPLICIDADE (2/2): dedup na base concatenada de PRODUÇÃO
+# Se por algum motivo ainda entrou duplicado, remove linhas idênticas (data + chassi + vistoriador + unidade).
+if not dfP.empty:
+    subset = []
+    for c in ["__DATA__", "CHASSI", "VISTORIADOR", "UNIDADE"]:
+        if c in dfP.columns:
+            subset.append(c)
+    if subset:
+        dfP = dfP.drop_duplicates(subset=subset, keep="first").copy()
+
 # ------------------ DATAS NORMALIZADAS (UMA VEZ) ------------------
-dfQ["DATA_DT"] = pd.to_datetime(dfQ["DATA"], errors="coerce")          # timestamp (sem perder hora, se existir)
-dfQ["DATA_D"]  = dfQ["DATA_DT"].dt.date                                 # date (rápido para between)
+dfQ["DATA_DT"] = pd.to_datetime(dfQ["DATA"], errors="coerce")
+dfQ["DATA_D"]  = dfQ["DATA_DT"].dt.date
 dfQ["YM"] = dfQ["DATA_DT"].dt.to_period("M").astype(str)
-dfQ.loc[dfQ["DATA_DT"].isna(), "YM"] = np.nan  # impede "NaT" virar mês
+dfQ.loc[dfQ["DATA_DT"].isna(), "YM"] = np.nan
 
 if not dfP.empty:
     dfP["DATA_DT"] = pd.to_datetime(dfP["__DATA__"], errors="coerce")
     dfP["DATA_D"]  = dfP["DATA_DT"].dt.date
     dfP["YM"]      = dfP["DATA_DT"].dt.to_period("M").astype(str)
     dfP.loc[dfP["DATA_DT"].isna(), "YM"] = np.nan
-    
+
 # Normaliza TEMPO_CASA (NOVATO / VETERANO) — IGUAL STARCHECK
 if "TEMPO_CASA" in dfQ.columns:
     dfQ["TEMPO_CASA"] = dfQ["TEMPO_CASA"].astype(str).map(_upper)
-
 
 # ------------------ FILTROS PRINCIPAIS ------------------
 if "EMPRESA" in dfQ.columns:
@@ -424,11 +445,9 @@ if not sel_labels:
 ym_sels = [label_map[lbl] for lbl in sel_labels]
 ym_sels_set = set(ym_sels)
 
-# Recorta a qualidade para os meses selecionados
 mask_meses_q = dfQ["YM"].isin(ym_sels_set)
 dfQ_win = dfQ[mask_meses_q].copy()
 
-# Período (dentro da janela de meses selecionados)
 s_win_dates = dfQ_win["DATA_D"].dropna()
 
 if s_win_dates.empty:
@@ -450,15 +469,12 @@ start_d, end_d = (drange if isinstance(drange, tuple) and len(drange) == 2 else 
 mask_dias = s_win_dates.between(start_d, end_d)
 viewQ = dfQ_win[mask_dias].copy()
 
-# Mês-base (para blocos que ainda precisam de um mês)
-ym_base = max(ym_sels)  # maior AAAA-MM selecionado
+ym_base = max(ym_sels)
 ref_year, ref_month = int(ym_base[:4]), int(ym_base[5:7])
 
-# Flag: 1 mês selecionado (mantém "Hoje vs Ontem", projeções e blocos mensais)
 single_month_mode = (len(ym_sels) == 1)
 ym_sel = ym_base
 
-# -------- Filtros extras --------
 unids = sorted(viewQ["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in viewQ.columns else []
 vist_opts = sorted(viewQ["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewQ.columns else []
 
@@ -468,7 +484,6 @@ with col2:
         f_unids = st.multiselect("Unidades (opcional)", unids, default=unids)
     with c22:
         f_vists = st.multiselect("Vistoriadores (opcional)", vist_opts)
-    # Filtro de tempo de casa no cabeçalho — IGUAL STARCHECK
     perfil_sel = st.radio(
         "Perfil (tempo de casa)",
         ["Todos", "Novatos", "Veteranos"],
@@ -481,7 +496,6 @@ if f_unids and "UNIDADE" in viewQ.columns:
 if f_vists:
     viewQ = viewQ[viewQ["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
-# Aplica filtro NOVATO / VETERANO na base de qualidade
 set_vists_perfil = None
 if "TEMPO_CASA" in viewQ.columns and perfil_sel != "Todos":
     alvo = "NOVATO" if perfil_sel == "Novatos" else "VETERANO"
@@ -493,30 +507,30 @@ if viewQ.empty:
 
 # -------- Produção alinhada --------
 if not dfP.empty:
-    # 1) Primeiro filtra por MESES selecionados (multi-mês)
     s_p_ts_all = pd.to_datetime(dfP["__DATA__"], errors="coerce")
     p_periodos = s_p_ts_all.dt.to_period("M").astype(str)
     maskp_meses = p_periodos.isin(ym_sels_set)
     dfP_win = dfP[maskp_meses].copy()
 
-    # 2) Depois filtra pelo PERÍODO selecionado (start_d..end_d)
     s_p_dates_win = pd.to_datetime(dfP_win["__DATA__"], errors="coerce").dt.date
     maskp_dias = s_p_dates_win.map(lambda d: isinstance(d, date) and start_d <= d <= end_d)
     viewP = dfP_win[maskp_dias].copy()
 
-    # 3) Aplica os mesmos filtros do topo
     if f_unids and "UNIDADE" in viewP.columns:
         viewP = viewP[viewP["UNIDADE"].isin([_upper(u) for u in f_unids])]
     if f_vists and "VISTORIADOR" in viewP.columns:
         viewP = viewP[viewP["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
-    # 4) Aplica filtro de perfil também na produção
     if set_vists_perfil is not None and "VISTORIADOR" in viewP.columns:
         viewP = viewP[viewP["VISTORIADOR"].isin(set_vists_perfil)]
 
 else:
     viewP = pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
 
+# ============================================================
+# A PARTIR DAQUI: seu código segue IGUAL ao que você mandou
+# (KPIs, gráficos, tabelas, % erro, exportação, etc.)
+# ============================================================
 
 # ------------------ KPIs ------------------
 grav_gg = {"GRAVE", "GRAVISSIMO", "GRAVÍSSIMO"}
@@ -538,7 +552,6 @@ total_vist_brutas = int(len(viewP)) if not viewP.empty else 0
 taxa_geral = (total_erros / total_vist_brutas * 100) if total_vist_brutas else np.nan
 taxa_geral_str = "—" if np.isnan(taxa_geral) else f"{taxa_geral:.1f}%".replace(".", ",")
 
-# % GG sobre produção bruta
 taxa_gg_bruta = (total_gg / total_vist_brutas * 100) if total_vist_brutas else np.nan
 taxa_gg_bruta_str = "—" if np.isnan(taxa_gg_bruta) else f"{taxa_gg_bruta:.1f}%".replace(".", ",")
 

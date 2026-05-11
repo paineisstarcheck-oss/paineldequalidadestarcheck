@@ -816,7 +816,10 @@ if "UNIDADE" in viewQ.columns:
                 prod_city = pd.DataFrame(columns=["UNIDADE", "VIST"])
 
             by_city = by_city.merge(prod_city, on="UNIDADE", how="left").fillna({"VIST": 0})
-            by_city["%ERRO"] = np.where(by_city["VIST"] > 0, (by_city["QTD"] / by_city["VIST"]) * 100, np.nan)
+            by_city["VIST"] = pd.to_numeric(by_city["VIST"], errors="coerce").fillna(0)
+            by_city["QTD"] = pd.to_numeric(by_city["QTD"], errors="coerce").fillna(0)
+            den_city = by_city["VIST"].replace(0, np.nan)
+            by_city["%ERRO"] = (by_city["QTD"] / den_city) * 100
 
             if by_city["%ERRO"].isna().all():
                 total_err = by_city["QTD"].sum()
@@ -878,8 +881,10 @@ if "UNIDADE" in viewQ.columns:
 
             by_city_gg = by_city_gg.merge(prod_city, on="UNIDADE", how="left").fillna({"VIST": 0})
 
-            by_city_gg["%ERRO_GG"] = np.where(by_city_gg["VIST"] > 0,
-                                              (by_city_gg["QTD_GG"] / by_city_gg["VIST"]) * 100, np.nan)
+            by_city_gg["VIST"] = pd.to_numeric(by_city_gg["VIST"], errors="coerce").fillna(0)
+            by_city_gg["QTD_GG"] = pd.to_numeric(by_city_gg["QTD_GG"], errors="coerce").fillna(0)
+            den_city_gg = by_city_gg["VIST"].replace(0, np.nan)
+            by_city_gg["%ERRO_GG"] = (by_city_gg["QTD_GG"] / den_city_gg) * 100
             if by_city_gg["%ERRO_GG"].isna().all():
                 total_gg_global = by_city_gg["QTD_GG"].sum()
                 by_city_gg["%ERRO_GG"] = np.where(total_gg_global > 0,
@@ -1120,7 +1125,10 @@ if not fast_mode:
                 on="UNIDADE",
                 how="left",
             )
-            hm["%_VIST"] = np.where(hm["DEN"] > 0, (hm["QTD"] / hm["DEN"]) * 100, np.nan)
+            hm["DEN"] = pd.to_numeric(hm["DEN"], errors="coerce").fillna(0)
+            hm["QTD"] = pd.to_numeric(hm["QTD"], errors="coerce").fillna(0)
+            den_hm = hm["DEN"].replace(0, np.nan)
+            hm["%_VIST"] = (hm["QTD"] / den_hm) * 100
             hm["%_VIST_TXT"] = hm["%_VIST"].map(lambda x: "—" if pd.isna(x) else f"{x:.1f}%".replace(".", ","))
 
             rects = alt.Chart(hm).mark_rect().encode(
@@ -1292,6 +1300,10 @@ base["CIDADE"] = base["VISTORIADOR"].map(city_map).fillna("")
 
 den = base["liq"] if denom_mode.startswith("Líquida") else base["vist"]
 den = den.replace({0: np.nan})
+
+base["erros"] = pd.to_numeric(base["erros"], errors="coerce").fillna(0)
+base["erros_gg"] = pd.to_numeric(base["erros_gg"], errors="coerce").fillna(0)
+den = pd.to_numeric(den, errors="coerce").replace(0, np.nan)
 
 base["%ERRO"]    = ((base["erros"]    / den) * 100).round(1)
 base["%ERRO_GG"] = ((base["erros_gg"] / den) * 100).round(1)

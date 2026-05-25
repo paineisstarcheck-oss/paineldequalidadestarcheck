@@ -292,8 +292,10 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             else:
                 df["VISTORIADOR"] = df[col_dig].map(_upper)
 
-            df = df.sort_values(["__DATA__", col_chas], kind="mergesort").reset_index(drop=True)
-            df["__ORD__"] = df.groupby(col_chas).cumcount()
+            # Revistoria pela mesma regra do painel de Produção:
+            # mesma UNIDADE + mesmo CHASSI, a partir da 2ª ocorrência no mês.
+            df = df.sort_values(["__DATA__", col_unid, col_chas], kind="mergesort").reset_index(drop=True)
+            df["__ORD__"] = df.groupby([col_unid, col_chas]).cumcount()
             df["IS_REV"] = (df["__ORD__"] >= 1).astype(int)
 
     metas = pd.DataFrame()
@@ -391,15 +393,11 @@ dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
 dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
 
-# >>> FIX DUPLICIDADE (2/2): dedup na base concatenada de PRODUÇÃO
-# Se por algum motivo ainda entrou duplicado, remove linhas idênticas (data + chassi + vistoriador + unidade).
-if not dfP.empty:
-    subset = []
-    for c in ["__DATA__", "CHASSI", "VISTORIADOR", "UNIDADE"]:
-        if c in dfP.columns:
-            subset.append(c)
-    if subset:
-        dfP = dfP.drop_duplicates(subset=subset, keep="first").copy()
+# IMPORTANTE:
+# Não removemos linhas duplicadas da base de PRODUÇÃO aqui.
+# O painel de Produção por Vistoriador conta cada linha como vistoria bruta
+# e classifica revistorias por UNIDADE + CHASSI.
+# Manter essa mesma regra evita diferença entre os painéis de Qualidade e Produção.
 
 # ------------------ DATAS NORMALIZADAS (UMA VEZ) ------------------
 dfQ["DATA_DT"] = pd.to_datetime(dfQ["DATA"], errors="coerce")

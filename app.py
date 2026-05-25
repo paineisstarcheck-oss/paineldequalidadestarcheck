@@ -292,15 +292,6 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             else:
                 df["VISTORIADOR"] = df[col_dig].map(_upper)
 
-            # Alinhado ao painel de produção: remove linhas sem data/chassi/unidade/vistoriador.
-            # Isso evita que o painel de qualidade use uma base de produção diferente da do painel de produção.
-            df = df[
-                df["__DATA__"].notna() &
-                df[col_chas].astype(str).str.strip().ne("") &
-                df[col_unid].astype(str).str.strip().ne("") &
-                df["VISTORIADOR"].astype(str).str.strip().ne("")
-            ].copy()
-
             # Alinhado ao painel de produção: revistoria = repetição de CHASSI dentro da mesma UNIDADE
             df = df.sort_values(["__DATA__", col_unid, col_chas], kind="mergesort").reset_index(drop=True)
             df["__ORD__"] = df.groupby([col_unid, col_chas]).cumcount()
@@ -450,20 +441,15 @@ if not dfP.empty:
 else:
     dfP_win = pd.DataFrame(columns=["VISTORIADOR", "__DATA__", "IS_REV", "UNIDADE"])
 
-# O período precisa ser montado pela PRODUÇÃO + QUALIDADE.
-# Antes, o painel usava principalmente as datas da Qualidade. Se o último dia do mês tivesse produção,
-# mas não tivesse erro registrado, esse dia não aparecia no seletor e o denominador ficava menor
-# do que no Painel de Produção por Vistoriador.
-datas_q = dfQ_win["DATA_D"].dropna() if "DATA_D" in dfQ_win.columns else pd.Series([], dtype="object")
-datas_p = (
-    pd.to_datetime(dfP_win["__DATA__"], errors="coerce").dt.date.dropna()
-    if (not dfP_win.empty and "__DATA__" in dfP_win.columns)
-    else pd.Series([], dtype="object")
-)
-s_win_dates = pd.concat([pd.Series(datas_q), pd.Series(datas_p)], ignore_index=True).dropna()
+s_win_dates = dfQ_win["DATA_D"].dropna()
+
+# Para o seletor de período, usa o intervalo de datas disponível no recorte de qualidade.
+# Se a qualidade estiver vazia para o mês, usa a produção como fallback.
+if s_win_dates.empty and not dfP_win.empty:
+    s_win_dates = pd.to_datetime(dfP_win["__DATA__"], errors="coerce").dt.date.dropna()
 
 if s_win_dates.empty:
-    st.warning("O recorte selecionado não tem datas válidas na Qualidade nem na Produção. Verifique a coluna DATA nas bases.")
+    st.warning("O recorte selecionado não tem datas válidas (DATA vazia/ inválida). Remova o mês '/NaT' ou corrija a coluna DATA na base.")
     st.stop()
 
 min_d, max_d = s_win_dates.min(), s_win_dates.max()
@@ -540,28 +526,7 @@ if set_vists_perfil is not None and "VISTORIADOR" in viewP.columns:
     viewP = viewP[viewP["VISTORIADOR"].isin(set_vists_perfil)]
 
 if viewQ.empty:
-    st.info("Sem registros de Qualidade no período/filtros.")
-    st.stop()
-
-# Diagnóstico rápido para conferir se o denominador de produção bate com o Painel de Produção por Vistoriador.
-with st.expander("🔎 Diagnóstico da base de produção usada no painel de qualidade"):
-    total_diag_bruto = int(len(viewP)) if not viewP.empty else 0
-    total_diag_rev = int(viewP["IS_REV"].sum()) if (not viewP.empty and "IS_REV" in viewP.columns) else 0
-    total_diag_liq = total_diag_bruto - total_diag_rev
-    st.write(f"Período aplicado na produção: {start_d.strftime('%d/%m/%Y')} a {end_d.strftime('%d/%m/%Y')}")
-    st.write(f"Total bruto: {total_diag_bruto:,}".replace(",", "."))
-    st.write(f"Total revistorias: {total_diag_rev:,}".replace(",", "."))
-    st.write(f"Total líquido: {total_diag_liq:,}".replace(",", "."))
-
-    if not viewP.empty and "VISTORIADOR" in viewP.columns:
-        diag_vist = (
-            viewP.groupby("VISTORIADOR", dropna=False)
-                 .agg(VISTORIAS=("IS_REV", "size"), REVISTORIAS=("IS_REV", "sum"))
-                 .reset_index()
-        )
-        diag_vist["LÍQUIDO"] = diag_vist["VISTORIAS"] - diag_vist["REVISTORIAS"]
-        diag_vist = diag_vist.sort_values("VISTORIAS", ascending=False)
-        st.dataframe(diag_vist, use_container_width=True, hide_index=True)
+    st.info("Sem registros de Qualidade no período/filtros."); st.stop()
 
 # ============================================================
 # A PARTIR DAQUI: seu código segue IGUAL ao que você mandou

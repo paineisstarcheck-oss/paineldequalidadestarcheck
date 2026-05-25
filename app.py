@@ -292,8 +292,7 @@ def read_prod_month(month_sheet_id: str, ym: Optional[str] = None) -> Tuple[pd.D
             else:
                 df["VISTORIADOR"] = df[col_dig].map(_upper)
 
-            # Revistoria pela mesma regra do painel de Produção:
-            # mesma UNIDADE + mesmo CHASSI, a partir da 2ª ocorrência no mês.
+            # Alinhado ao painel de produção: revistoria = repetição de CHASSI dentro da mesma UNIDADE
             df = df.sort_values(["__DATA__", col_unid, col_chas], kind="mergesort").reset_index(drop=True)
             df["__ORD__"] = df.groupby([col_unid, col_chas]).cumcount()
             df["IS_REV"] = (df["__ORD__"] >= 1).astype(int)
@@ -342,16 +341,6 @@ if sel_meses:
 if sel_meses_p:
     idx_p = idx_p[idx_p["MÊS"].isin(sel_meses_p)]
 
-# >>> FIX DUPLICIDADE (1/2): dedup no índice de PRODUÇÃO por arquivo (URL) + mês
-# Evita carregar o mesmo mês/arquivo duas vezes caso o ARQUIVOS tenha linhas repetidas.
-if not idx_p.empty and "URL" in idx_p.columns:
-    idx_p["_SID_"] = idx_p["URL"].apply(_sheet_id)
-    # se existir MÊS, dedup por (SID + MÊS); senão, por SID
-    if "MÊS" in idx_p.columns:
-        idx_p = idx_p.drop_duplicates(subset=["_SID_", "MÊS"], keep="first").copy()
-    else:
-        idx_p = idx_p.drop_duplicates(subset=["_SID_"], keep="first").copy()
-
 dq_all, ok_q, er_q = [], [], []
 for _, r in idx_q.iterrows():
     sid = _sheet_id(r["URL"])
@@ -392,12 +381,6 @@ if not dq_all:
 dfQ = pd.concat(dq_all, ignore_index=True)
 dfP = pd.concat(dp_all, ignore_index=True) if dp_all else pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
 dfMetas = pd.concat(metas_all, ignore_index=True) if metas_all else pd.DataFrame(columns=["VISTORIADOR","UNIDADE","META_MENSAL","DIAS_UTEIS","YM"])
-
-# IMPORTANTE:
-# Não removemos linhas duplicadas da base de PRODUÇÃO aqui.
-# O painel de Produção por Vistoriador conta cada linha como vistoria bruta
-# e classifica revistorias por UNIDADE + CHASSI.
-# Manter essa mesma regra evita diferença entre os painéis de Qualidade e Produção.
 
 # ------------------ DATAS NORMALIZADAS (UMA VEZ) ------------------
 dfQ["DATA_DT"] = pd.to_datetime(dfQ["DATA"], errors="coerce")
@@ -446,7 +429,24 @@ ym_sels_set = set(ym_sels)
 mask_meses_q = dfQ["YM"].isin(ym_sels_set)
 dfQ_win = dfQ[mask_meses_q].copy()
 
+# Pré-filtra a produção pelo(s) mesmo(s) mês(es).
+# Importante: os filtros de UNIDADE precisam considerar também a base de produção,
+# não apenas a base de qualidade. Caso uma unidade tenha produção e zero erro,
+# ela não aparece em dfQ e o denominador fica menor do que no painel de produção.
+if not dfP.empty:
+    s_p_ts_all = pd.to_datetime(dfP["__DATA__"], errors="coerce")
+    p_periodos = s_p_ts_all.dt.to_period("M").astype(str)
+    maskp_meses = p_periodos.isin(ym_sels_set)
+    dfP_win = dfP[maskp_meses].copy()
+else:
+    dfP_win = pd.DataFrame(columns=["VISTORIADOR", "__DATA__", "IS_REV", "UNIDADE"])
+
 s_win_dates = dfQ_win["DATA_D"].dropna()
+
+# Para o seletor de período, usa o intervalo de datas disponível no recorte de qualidade.
+# Se a qualidade estiver vazia para o mês, usa a produção como fallback.
+if s_win_dates.empty and not dfP_win.empty:
+    s_win_dates = pd.to_datetime(dfP_win["__DATA__"], errors="coerce").dt.date.dropna()
 
 if s_win_dates.empty:
     st.warning("O recorte selecionado não tem datas válidas (DATA vazia/ inválida). Remova o mês '/NaT' ou corrija a coluna DATA na base.")
@@ -464,8 +464,18 @@ with col1:
     )
 
 start_d, end_d = (drange if isinstance(drange, tuple) and len(drange) == 2 else (min_d, max_d))
-mask_dias = s_win_dates.between(start_d, end_d)
-viewQ = dfQ_win[mask_dias].copy()
+
+# Aplica o período em qualidade
+mask_dias_q = dfQ_win["DATA_D"].map(lambda d: isinstance(d, date) and start_d <= d <= end_d)
+viewQ = dfQ_win[mask_dias_q].copy()
+
+# Aplica o período em produção
+if not dfP_win.empty:
+    s_p_dates_win = pd.to_datetime(dfP_win["__DATA__"], errors="coerce").dt.date
+    maskp_dias = s_p_dates_win.map(lambda d: isinstance(d, date) and start_d <= d <= end_d)
+    viewP = dfP_win[maskp_dias].copy()
+else:
+    viewP = pd.DataFrame(columns=["VISTORIADOR", "__DATA__", "IS_REV", "UNIDADE"])
 
 ym_base = max(ym_sels)
 ref_year, ref_month = int(ym_base[:4]), int(ym_base[5:7])
@@ -473,8 +483,15 @@ ref_year, ref_month = int(ym_base[:4]), int(ym_base[5:7])
 single_month_mode = (len(ym_sels) == 1)
 ym_sel = ym_base
 
-unids = sorted(viewQ["UNIDADE"].dropna().unique().tolist()) if "UNIDADE" in viewQ.columns else []
-vist_opts = sorted(viewQ["VISTORIADOR"].dropna().unique().tolist()) if "VISTORIADOR" in viewQ.columns else []
+# Filtros precisam ser montados pela união da Qualidade + Produção.
+# Isso evita reduzir o total de vistorias quando existe produção em unidade/vistoriador sem erro.
+unids_q = viewQ["UNIDADE"].dropna().unique().tolist() if "UNIDADE" in viewQ.columns else []
+unids_p = viewP["UNIDADE"].dropna().unique().tolist() if "UNIDADE" in viewP.columns else []
+unids = sorted(set(unids_q) | set(unids_p))
+
+vists_q = viewQ["VISTORIADOR"].dropna().unique().tolist() if "VISTORIADOR" in viewQ.columns else []
+vists_p = viewP["VISTORIADOR"].dropna().unique().tolist() if "VISTORIADOR" in viewP.columns else []
+vist_opts = sorted(set(vists_q) | set(vists_p))
 
 with col2:
     c21, c22 = st.columns(2)
@@ -491,8 +508,13 @@ with col2:
 
 if f_unids and "UNIDADE" in viewQ.columns:
     viewQ = viewQ[viewQ["UNIDADE"].isin([_upper(u) for u in f_unids])]
-if f_vists:
+if f_unids and "UNIDADE" in viewP.columns:
+    viewP = viewP[viewP["UNIDADE"].isin([_upper(u) for u in f_unids])]
+
+if f_vists and "VISTORIADOR" in viewQ.columns:
     viewQ = viewQ[viewQ["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
+if f_vists and "VISTORIADOR" in viewP.columns:
+    viewP = viewP[viewP["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
 
 set_vists_perfil = None
 if "TEMPO_CASA" in viewQ.columns and perfil_sel != "Todos":
@@ -500,30 +522,11 @@ if "TEMPO_CASA" in viewQ.columns and perfil_sel != "Todos":
     viewQ = viewQ[viewQ["TEMPO_CASA"] == alvo]
     set_vists_perfil = set(viewQ["VISTORIADOR"].unique())
 
+if set_vists_perfil is not None and "VISTORIADOR" in viewP.columns:
+    viewP = viewP[viewP["VISTORIADOR"].isin(set_vists_perfil)]
+
 if viewQ.empty:
     st.info("Sem registros de Qualidade no período/filtros."); st.stop()
-
-# -------- Produção alinhada --------
-if not dfP.empty:
-    s_p_ts_all = pd.to_datetime(dfP["__DATA__"], errors="coerce")
-    p_periodos = s_p_ts_all.dt.to_period("M").astype(str)
-    maskp_meses = p_periodos.isin(ym_sels_set)
-    dfP_win = dfP[maskp_meses].copy()
-
-    s_p_dates_win = pd.to_datetime(dfP_win["__DATA__"], errors="coerce").dt.date
-    maskp_dias = s_p_dates_win.map(lambda d: isinstance(d, date) and start_d <= d <= end_d)
-    viewP = dfP_win[maskp_dias].copy()
-
-    if f_unids and "UNIDADE" in viewP.columns:
-        viewP = viewP[viewP["UNIDADE"].isin([_upper(u) for u in f_unids])]
-    if f_vists and "VISTORIADOR" in viewP.columns:
-        viewP = viewP[viewP["VISTORIADOR"].isin([_upper(v) for v in f_vists])]
-
-    if set_vists_perfil is not None and "VISTORIADOR" in viewP.columns:
-        viewP = viewP[viewP["VISTORIADOR"].isin(set_vists_perfil)]
-
-else:
-    viewP = pd.DataFrame(columns=["VISTORIADOR","__DATA__","IS_REV","UNIDADE"])
 
 # ============================================================
 # A PARTIR DAQUI: seu código segue IGUAL ao que você mandou
